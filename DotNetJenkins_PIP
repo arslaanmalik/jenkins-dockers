@@ -1,0 +1,69 @@
+pipeline {
+    agent {
+        label 'jenkinsWindow'
+    }
+    options {
+        // This is required if you want to clean before build
+        skipDefaultCheckout(true)
+    }
+    stages {
+        stage ('Clean workspace') {
+            steps {
+                cleanWs()    
+			}
+        }
+        stage ('Git Checkout') {
+            steps {
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']], extensions: [], userRemoteConfigs: [[url: 'https://github.com/alinakhanSystemsltd/eShopOnWeb.git']]])
+			}
+        }
+        stage('Restore packages') {
+            steps {
+                bat "dotnet restore ${workspace}\\eShopOnWeb.sln"
+			}
+        }
+        stage('Build') {
+            steps {
+                bat "dotnet build eShopOnWeb.sln  --configuration Release"
+                
+			}
+        }
+        stage('Running unit tests') {
+            steps {
+				//bat 'dotnet test tests\\UnitTests\\UnitTests.csproj --logger:"trx;logFileName=unitReports.xml" --collect "Code coverage" /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:CoverletOutput="./TestResults/" --results-directory BuildReports'
+				  bat "dotnet add ${workspace}\\tests\\UnitTests\\UnitTests.csproj package JUnitTestLogger --version 1.1.0"
+				  bat "dotnet test ${workspace}\\tests\\UnitTests\\UnitTests.csproj --logger \"junit;LogFilePath=\"${WORKSPACE}\"/TestResults/1.0.0.\"${env.BUILD_NUMBER}\"/results.xml\" --configuration release --collect \"Code coverage\""
+				  powershell '''
+                    $destinationFolder = \"$env:WORKSPACE/TestResults\"
+                    if (!(Test-Path -path $destinationFolder)) {New-Item $destinationFolder -Type Directory}
+                    $file = Get-ChildItem -Path \"$env:WORKSPACE/tests\\UnitTests/TestResults/*/*.coverage\"
+                    $file | Rename-Item -NewName testcoverage.coverage
+                    $renamedFile = Get-ChildItem -Path \"$env:WORKSPACE/tests\\UnitTests/TestResults/*/*.coverage\"
+                    Copy-Item $renamedFile -Destination $destinationFolder
+                    '''      
+            }        
+		}
+		stage('Convert coverage file to xml coverage file') {
+            steps {
+              bat "\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\Team Tools\\Dynamic Code Coverage Tools\\CodeCoverage.exe\" analyze  /output:${WORKSPACE}\\TestResults\\xmlresults.coveragexml  ${WORKSPACE}\\TestResults\\testcoverage.coverage"
+               
+            }
+		}
+		stage('Generate report') {
+            steps {
+                bat "C:\\ReportGenerator\\net5.0\\ReportGenerator.exe -reports:${WORKSPACE}\\TestResults\\xmlresults.coveragexml -targetdir:${WORKSPACE}\\CodeCoverage_${env.BUILD_NUMBER}"
+            }
+        }
+        stage('Publish HTML report') {
+            steps {
+                publishHTML(target: [allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'CodeCoverage_${BUILD_NUMBER}', reportFiles: 'index.html', reportName: 'HTML Report', reportTitles: 'Code Coverage Report'])
+            }
+        }
+    }
+    post {
+        always {
+        archiveArtifacts artifacts: '**/*.jar', followSymlinks: false
+        junit "TestResults/1.0.0.${env.BUILD_NUMBER}/results.xml"
+    }
+}
+}
